@@ -61,7 +61,13 @@ class Policy:
 
         Hint: Use np.argmax to find the action with the highest Q-value
         """
-        raise NotImplementedError("Implement the forward method")
+
+        s0, s1 = self.discretize_state(obs)
+        q_values = self.q_table[s0, s1]
+        action = int(np.argmax(q_values))
+        return action
+    
+        # raise NotImplementedError("Implement the forward method")
 
 
 def load_policy(checkpoint_path: str) -> Policy:

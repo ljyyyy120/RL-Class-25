@@ -192,8 +192,25 @@ def q_iteration(
     Hint: You can vectorize this for efficiency, but a loop-based
     implementation is also fast for this small state space.
     """
-    raise NotImplementedError("Implement q_iteration")
 
+    Q = np.zeros_like(R)
+    for i in range(max_iterations):
+        Q_new = np.zeros_like(Q)
+        for s0 in range(N_BINS):
+            for s1 in range(N_BINS):
+                for a in range(N_ACTIONS):
+                    s0_next, s1_next = P[s0, s1, a]
+                    r = R[s0, s1, a]
+                    d = D[s0, s1, a]
+                    Q_new[s0, s1, a] = r + gamma * (1 - d) * np.max(Q[s0_next, s1_next])
+        delta = np.max(np.abs(Q_new - Q))
+        Q = Q_new
+        i += 1
+        if delta < theta:
+            break
+    return Q
+
+    # raise NotImplementedError("Implement q_iteration")
 
 # =============================================================================
 # EVALUATION AND SAVING - DO NOT MODIFY
