@@ -8,6 +8,7 @@ Based on CleanRL's PPO implementation:
 https://github.com/vwxyzjn/cleanrl/blob/master/cleanrl/ppo.py
 """
 
+import math
 import torch
 from typing import Tuple
 
@@ -58,8 +59,15 @@ def compute_returns(
           just its immediate reward.
 
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement compute_returns")
+
+    G = torch.zeros_like(rewards)  # Initialize with the same shape as rewards
+    for t in range(rewards.shape[0]-1, -1, -1):
+        if t == rewards.shape[0]-1:
+            G[t] = rewards[t]
+        else:
+            G[t] = rewards[t] + gamma * G[t+1] * (1 - dones[t])  # Add discounted future reward
+
+    return G
 
 
 def compute_gae(
@@ -113,8 +121,18 @@ def compute_gae(
           (b) GAE should not propagate advantages from future steps when done[t]=1
         - The values tensor has one more element along dim 0 than rewards.
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement compute_gae")
+
+    if rewards.shape[0] + 1 != values.shape[0]:
+        raise ValueError(f"Expected values to have one more element than rewards along dim 0, but got rewards.shape[0]={rewards.shape[0]} and values.shape[0]={values.shape[0]}")
+
+    gae = torch.zeros_like(rewards)  # Initialize with the same shape as rewards
+    for t in range(rewards.shape[0]-1, -1, -1):
+        if t == rewards.shape[0]-1:
+            gae[t] = rewards[t] + gamma * values[t+1] * (1 - dones[t]) - values[t]
+        else:
+            gae[t] = (rewards[t] + gamma * values[t+1] * (1 - dones[t]) - values[t]) + gamma * lam * gae[t+1] * (1 - dones[t])
+
+    return gae
 
 
 def normalize_advantages(advantages: torch.Tensor) -> torch.Tensor:
@@ -142,8 +160,12 @@ def normalize_advantages(advantages: torch.Tensor) -> torch.Tensor:
           dividing by N-1) for the standard deviation.
 
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement normalize_advantages")
+    mean = advantages.mean()
+    std = advantages.std() + 1e-8  # Add epsilon to prevent division by zero
+    normalized = (advantages - mean) / std
+
+    return normalized
+
 
 
 # =============================================================================
@@ -189,8 +211,9 @@ def discrete_log_prob(logits: torch.Tensor, actions: torch.Tensor) -> torch.Tens
           action for each sample in the batch independently. A common bug is
           selecting the same action index for all samples.
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement discrete_log_prob")
+    log_probs_all = torch.nn.functional.log_softmax(logits, dim=-1)  # shape (batch_size, num_actions)
+    log_probs = log_probs_all.gather(1, actions.unsqueeze(1)).squeeze(1)  # shape (batch_size,)
+    return log_probs
 
 
 def discrete_entropy(logits: torch.Tensor) -> torch.Tensor:
@@ -218,8 +241,10 @@ def discrete_entropy(logits: torch.Tensor) -> torch.Tensor:
         - Return per-sample entropy (shape batch_size), not a scalar.
 
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement discrete_entropy")
+    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)  # shape (batch_size, num_actions)
+    probs = torch.exp(log_probs)  # shape (batch_size, num_actions)
+    entropy = -torch.sum(probs * log_probs, dim=-1)  # shape (batch_size,)
+    return entropy
 
 
 def gaussian_log_prob(
@@ -258,8 +283,14 @@ def gaussian_log_prob(
           handles this automatically.
 
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement gaussian_log_prob")
+    std = torch.exp(log_std)  # shape (action_dim,) or (batch_size, action_dim)
+
+    log_probs = (
+        -0.5 * ((actions - mean) / std) ** 2
+        - log_std
+        - 0.5 * torch.log(torch.tensor(2 * torch.pi))
+    )
+    return log_probs.sum(dim=-1)  # sum over action dimensions to get total log prob
 
 
 def gaussian_entropy(log_std: torch.Tensor) -> torch.Tensor:
@@ -286,8 +317,18 @@ def gaussian_entropy(log_std: torch.Tensor) -> torch.Tensor:
           Check log_std.dim() to determine which case you're in.
 
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement gaussian_entropy")
+    c = 0.5 * math.log(2 * math.pi * math.e)
+
+    if log_std.dim() == 1:
+        # (action_dim,)
+        action_dim = log_std.shape[0]
+        return action_dim * c + log_std.sum()
+    elif log_std.dim() == 2:
+        # (batch_size, action_dim)
+        action_dim = log_std.shape[-1]
+        return action_dim * c + log_std.sum(dim=-1)
+    else:
+        raise ValueError(f"log_std must be 1D or 2D, got shape {tuple(log_std.shape)}")
 
 
 # =============================================================================
@@ -311,8 +352,10 @@ def sample_discrete_action(logits: torch.Tensor) -> Tuple[torch.Tensor, torch.Te
         actions: Tensor of shape (batch_size,) containing sampled action indices
         log_probs: Tensor of shape (batch_size,) containing log P(action)
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement sample_discrete_action")
+    probs = torch.nn.functional.softmax(logits, dim=-1)  # shape (batch_size, num_actions)
+    actions = torch.multinomial(probs, num_samples=1).squeeze(1)  # shape (batch_size,)
+    log_probs = discrete_log_prob(logits, actions)  # shape (batch_size,)
+    return actions, log_probs
 
 
 def sample_continuous_action(
@@ -358,8 +401,16 @@ def sample_continuous_action(
         actions: Tensor of shape (batch_size, action_dim) - squashed actions in [-1, 1]
         log_probs: Tensor of shape (batch_size,) - log probabilities with Jacobian correction
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement sample_continuous_action")
+    std = torch.exp(log_std)  # shape (action_dim,) or (batch_size, action_dim)
+    dist = torch.distributions.Normal(mean, std)
+    z = dist.rsample()
+    action = torch.tanh(z)
+
+    log_prob = dist.log_prob(z)
+    log_prob -= torch.log(1 - action.pow(2) + 1e-6)
+    log_prob = log_prob.sum(-1)
+    
+    return action, log_prob
 
 
 def squashed_gaussian_log_prob(
@@ -394,8 +445,10 @@ def squashed_gaussian_log_prob(
         - The Jacobian correction term is: -sum(log(1 - action^2 + eps))
 
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement squashed_gaussian_log_prob")
+    squashed_action = torch.clamp(squashed_action, -0.999, 0.999)  # Avoid atanh(1) = inf
+    z = 0.5 * torch.log((1 + squashed_action) / (1 - squashed_action))  # Invert tanh: z = atanh(action)
+    log_probs = gaussian_log_prob(mean, log_std, z) - torch.sum(torch.log(1 - squashed_action ** 2 + 1e-8), dim=-1)  # Apply Jacobian correction
+    return log_probs
 
 
 def clip_action(
@@ -418,8 +471,7 @@ def clip_action(
     Returns:
         clipped_action: Tensor of same shape with values clipped to [low, high]
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement clip_action")
+    return torch.clamp(action, low, high)
 
 
 # =============================================================================
@@ -473,8 +525,14 @@ def compute_policy_loss(
           optimizers minimize loss).
 
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement compute_policy_loss")
+    ratio = torch.exp(log_probs - old_log_probs)
+    clipped_ratio = torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon)
+    L_clip = torch.min(ratio * advantages, clipped_ratio * advantages)
+
+    return - L_clip.mean()
+
+
+    
 
 
 def compute_value_loss(
@@ -498,8 +556,9 @@ def compute_value_loss(
     Returns:
         loss: Scalar tensor containing MSE loss
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement compute_value_loss")
+    Loss = torch.mean((values - returns) ** 2)
+
+    return Loss
 
 
 def compute_entropy_bonus(probs: torch.Tensor) -> torch.Tensor:
@@ -527,8 +586,10 @@ def compute_entropy_bonus(probs: torch.Tensor) -> torch.Tensor:
         - Return the mean entropy across the batch, not the sum.
 
     """
-    # TODO: Implement this
-    raise NotImplementedError("Implement compute_entropy_bonus")
+    entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1).mean()
+
+    return entropy
+    
 
 
 # =============================================================================
@@ -589,8 +650,12 @@ class RolloutBuffer:
         self.num_envs = num_envs
         self.device = device
 
-        # TODO: Initialize storage tensors
-        raise NotImplementedError("Initialize RolloutBuffer storage")
+        self.obs = torch.zeros((num_steps, num_envs) + obs_shape, device=device)
+        self.actions = torch.zeros((num_steps, num_envs) + action_shape, device=device)
+        self.log_probs = torch.zeros((num_steps, num_envs), device=device)
+        self.rewards = torch.zeros((num_steps, num_envs), device=device)
+        self.dones = torch.zeros((num_steps, num_envs), device=device)
+        self.values = torch.zeros((num_steps, num_envs), device=device)
 
         self.step = 0
 
@@ -622,8 +687,20 @@ class RolloutBuffer:
             value: shape (num_envs,)
 
         """
-        # TODO: Implement this
-        raise NotImplementedError("Implement RolloutBuffer.add")
+
+        if self.step >= self.num_steps:
+            raise RuntimeError("RolloutBuffer overflow: call reset() before adding more.")
+
+        self.obs[self.step].copy_(obs.detach())
+        self.actions[self.step].copy_(action.detach())
+        self.log_probs[self.step].copy_(log_prob.detach())
+        self.rewards[self.step].copy_(reward.detach())
+        self.dones[self.step].copy_(done.detach())
+        self.values[self.step].copy_(value.detach())
+
+        self.step += 1
+
+
 
     def compute_returns_and_advantages(
         self,
@@ -658,10 +735,25 @@ class RolloutBuffer:
               (the episode ended, so there's no future value to bootstrap from).
 
         """
-        # TODO: Implement this
-        raise NotImplementedError(
-            "Implement RolloutBuffer.compute_returns_and_advantages"
-        )
+
+        last_value = last_value.to(self.device).view(self.num_envs)
+        last_done = last_done.to(self.device).view(self.num_envs).float()
+
+        # If episode ended at rollout boundary, do not bootstrap
+        last_value = last_value * (1.0 - last_done)
+
+        # (num_steps + 1, num_envs)
+        values_ext = torch.cat([self.values, last_value.unsqueeze(0)], dim=0)
+
+        # Unnormalized GAE advantages (num_steps, num_envs)
+        advantages = compute_gae(self.rewards, values_ext, self.dones, gamma, gae_lambda)
+
+        # Returns consistent with GAE: returns = advantages + values
+        returns = advantages + self.values
+
+        return returns, advantages
+
+
 
     def get_batches(
         self, batch_size: int, returns: torch.Tensor, advantages: torch.Tensor
@@ -690,5 +782,33 @@ class RolloutBuffer:
             - Shuffle the indices to ensure random minibatches.
             - Preserve the trailing dimensions (obs_shape, action_shape) when reshaping.
         """
-        # TODO: Implement this
-        raise NotImplementedError("Implement RolloutBuffer.get_batches")
+   
+        # Use the number of collected steps
+        total_samples = self.step * self.num_envs
+
+        # Flatten (num_steps, num_envs, ...) -> (total_samples, ...)
+        obs_flat = self.obs[:self.step].reshape(total_samples, *self.obs.shape[2:])
+        actions_flat = self.actions[:self.step].reshape(total_samples, *self.actions.shape[2:])
+        log_probs_flat = self.log_probs[:self.step].reshape(total_samples)
+        values_flat = self.values[:self.step].reshape(total_samples)
+        returns_flat = returns[:self.step].reshape(total_samples)
+        advantages_flat = advantages[:self.step].reshape(total_samples)
+
+        # Shuffle indices
+        indices = torch.randperm(total_samples, device=self.device)
+
+        # Drop the last incomplete batch
+        max_end = total_samples - (total_samples % batch_size)
+
+        for start in range(0, max_end, batch_size):
+            end = start + batch_size
+            batch_idx = indices[start:end]
+
+            yield {
+                "obs": obs_flat[batch_idx],
+                "actions": actions_flat[batch_idx],
+                "log_probs": log_probs_flat[batch_idx],
+                "returns": returns_flat[batch_idx],
+                "advantages": advantages_flat[batch_idx],
+                "values": values_flat[batch_idx],
+            }
