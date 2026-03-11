@@ -112,7 +112,104 @@ def train():
     Returns:
         List of episode rewards (one per completed episode).
     """
-    raise NotImplementedError("Implement train()")
+    # 1. Create the environment, online/target networks, optimizer, and `NStepReplayBuffer`
+    env = gym.make("CartPole-v1")
+
+    online = QNetwork(state_dim=4, action_dim=2).to(DEVICE)
+    target = QNetwork(state_dim=4, action_dim=2).to(DEVICE)
+    target.load_state_dict(online.state_dict())
+
+    optimizer = torch.optim.Adam(
+        online.parameters(),
+        lr=LR,
+        eps=1e-5,
+    )
+
+    buffer = NStepReplayBuffer(capacity = BUFFER_CAPACITY,
+                               n_step = N_STEP,
+                               gamma = GAMMA)
+    
+    episode_rewards = []
+    best_episode_reward = float("-inf")
+
+    # 2. Run an epsilon-greedy step loop, pushing transitions to the buffer
+    obs, _ = env.reset()
+    ep_reward = 0.0
+
+    for step in range(TOTAL_TIMESTEPS):
+
+        eps = linear_epsilon_decay(step, EPSILON_START, EPSILON_END,EPSILON_DECAY_STEPS)
+        state = torch.tensor(obs, dtype=torch.float32, device=DEVICE).unsqueeze(0)
+
+        with torch.no_grad():
+            q_vals = online(state)
+
+        action = epsilon_greedy_action(
+            q_values=q_vals,
+            epsilon=eps,
+            num_actions=2
+        )
+
+        next_obs, reward, term, trunc, _ = env.step(action)
+        done = term or trunc
+        ep_reward += reward
+
+
+        buffer.push(
+            state=obs,
+            action=action,
+            reward=reward,
+            next_state=next_obs,
+            done=done
+        )
+
+        obs = next_obs
+
+
+        # 3. After a warmup period, train on minibatches from the buffer
+        if step >= LEARNING_STARTS and len(buffer) >= BATCH_SIZE and step % TRAIN_FREQ == 0:
+
+            batch = buffer.sample(BATCH_SIZE)
+            states, actions, rewards, next_states, dones = batch_to_tensors(batch, device=DEVICE)
+
+            with torch.no_grad():
+
+                td_targets = compute_double_dqn_target(
+                    rewards= rewards,
+                    next_states = next_states,
+                    dones = dones,
+                    gamma = GAMMA,
+                    online_network = online,
+                    target_network = target)   
+                
+            q_values = online(states)          
+            loss = compute_td_loss(q_values = q_values,
+                        actions = actions,
+                        td_targets = td_targets)
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        #Periodically hard-update the target network
+        if step % TARGET_UPDATE_FREQ == 0:
+            hard_update(online, target)
+
+        if done:
+            episode_rewards.append(ep_reward)
+
+            if ep_reward > best_episode_reward:
+                best_episode_reward = ep_reward
+                torch.save(online.state_dict(), "dqn_cartpole.pt")
+
+            obs, _ = env.reset()
+            ep_reward = 0.0
+    
+    env.close()
+    print(best_episode_reward)
+
+    # Return a list of episode rewards
+    return episode_rewards
 
 
 # =============================================================================
